@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>附近即時停車位查詢</title>
+    <title>附近即時停車位與路邊車格查詢</title>
     <!-- Leaflet CSS -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <style>
@@ -55,8 +55,8 @@
 <body>
 
     <div id="header">
-        🚗 附近即時停車位查詢
-        <div id="status" class="loading-tip">正在取得您的位置...</div>
+        🚗 附近停車位與路邊車格即時查詢
+        <div id="status" class="loading-tip">正在取得高精度 GPS 位置...</div>
     </div>
     
     <div id="map"></div>
@@ -73,7 +73,7 @@
             attribution: '© OpenStreetMap 貢獻者'
         }).addTo(map);
 
-        // 3. 取得使用者當前定位並加載附近停車場
+        // 3. 取得使用者高精度定位
         if (navigator.geolocation) {
             navigator.geolocation.getCurrentPosition(function(position) {
                 var lat = position.coords.latitude;
@@ -84,25 +84,29 @@
 
                 // 標記使用者位置
                 L.marker([lat, lon]).addTo(map)
-                    .bindPopup('<b>📍 您在這裡</b>')
+                    .bindPopup('<b>📍 您在這裡（高精度定位）</b>')
                     .openPopup();
 
-                // 更新狀態並開始抓取真實停車位資料
-                document.getElementById('status').innerText = "正在載入附近即時停車位...";
-                loadTdxParkingData(lat, lon);
+                // 更新狀態並開始抓取真實停車位與路邊車格資料
+                document.getElementById('status').innerText = "正在載入附近停車場與路邊車格...";
+                loadAllParkingData(lat, lon);
 
             }, function(error) {
-                document.getElementById('status').innerText = "無法取得定位，顯示預設區域";
+                document.getElementById('status').innerText = "無法取得高精度定位，顯示預設區域";
                 alert('無法取得您的地理定位，將以預設區域查詢。');
-                loadTdxParkingData(24.1629, 120.6473);
+                loadAllParkingData(24.1629, 120.6473);
+            }, {
+                enableHighAccuracy: true, // 開啟高精度 GPS，降低偏移
+                timeout: 10000,
+                maximumAge: 0
             });
         } else {
             alert('您的瀏覽器不支援地理定位功能。');
-            loadTdxParkingData(24.1629, 120.6473);
+            loadAllParkingData(24.1629, 120.6473);
         }
 
-        // 4. 透過後端 API 取得 Token 並向 TDX 查詢即時停車場資料
-        async function loadTdxParkingData(lat, lon) {
+        // 4. 透過後端 API 取得 Token 並向 TDX 查詢即時停車場與路邊車格
+        async function loadAllParkingData(lat, lon) {
             try {
                 // 向我們自己的 Vercel 後端要 Token
                 const tokenRes = await fetch('/api/get-token');
@@ -113,51 +117,75 @@
                 }
                 const token = tokenData.access_token;
 
-                // 呼叫 TDX 臺中市附近停車場即時剩餘位數 API (半徑 2 公里內)
+                // 同時呼叫 (1) 停車場資料 與 (2) 路邊停車即時資料 (以臺中市 Taichung 為例)
                 const parkingUrl = `https://tdx.transportdata.tw/api/basic/v2/Parking/ParkingByProximity/City/Taichung?%24spatialFilter=nearby(${lat}%2C${lon}%2C2000)&%24format=JSON`;
+                const roadParkingUrl = `https://tdx.transportdata.tw/api/basic/v2/Parking/RoadSectionParkingStatus/City/Taichung?%24spatialFilter=nearby(${lat}%2C${lon}%2C1500)&%24format=JSON`;
 
-                const parkingRes = await fetch(parkingUrl, {
-                    headers: { 'Authorization': `Bearer ${token}` }
-                });
+                const [parkingRes, roadRes] = await Promise.all([
+                    fetch(parkingUrl, { headers: { 'Authorization': `Bearer ${token}` } }),
+                    fetch(roadParkingUrl, { headers: { 'Authorization': `Bearer ${token}` } }).catch(() => null)
+                ]);
                 
                 const parkingLots = await parkingRes.json();
+                let roadLots = [];
+                if (roadRes && roadRes.ok) {
+                    roadLots = await roadRes.json();
+                }
 
-                if (parkingLots.length === 0) {
+                let totalCount = parkingLots.length + roadLots.length;
+                if (totalCount === 0) {
                     document.getElementById('status').innerText = "附近無資料或超出範圍";
                     return;
                 }
 
-                document.getElementById('status').innerText = `已載入附近 ${parkingLots.length} 個停車場`;
+                document.getElementById('status').innerText = `已載入附近 ${parkingLots.length} 個停車場、${roadLots.length} 筆路邊車位`;
 
-                // 將真實停車場資料渲染到地圖上
+                // 渲染路外停車場
                 parkingLots.forEach(p => {
                     if (p.ParkingPosition && p.ParkingPosition.PositionLat) {
                         var pLat = p.ParkingPosition.PositionLat;
                         var pLon = p.ParkingPosition.PositionLon;
                         var name = p.ParkingName.Zh_tw;
-                        
-                        // 取得剩餘車位（若 API 有提供即時動態則顯示，否則顯示未知）
                         var availableSpaces = (p.AvailableSpaces !== undefined && p.AvailableSpaces !== null) 
                             ? `剩餘車位：<b>${p.AvailableSpaces}</b>` 
                             : '即時車位資料未提供';
 
-                        // Google 導航連結
                         var navUrl = `https://www.google.com/maps/dir/?api=1&destination=${pLat},${pLon}`;
-
                         var popupContent = `
-                            <b>${name}</b><br>
+                            <b>🅿️ ${name}</b><br>
                             ${availableSpaces}<br>
                             <a href="${navUrl}" target="_blank" class="nav-btn">一鍵導航</a>
                         `;
 
-                        L.marker([pLat, pLon]).addTo(map)
-                            .bindPopup(popupContent);
+                        L.marker([pLat, pLon]).addTo(map).bindPopup(popupContent);
+                    }
+                });
+
+                // 渲染路邊車格/地磁路段
+                roadLots.forEach(r => {
+                    if (r.CarParkPosition && r.CarParkPosition.PositionLat) {
+                        var rLat = r.CarParkPosition.PositionLat;
+                        var rLon = r.CarParkPosition.PositionLon;
+                        var rName = r.RoadSectionName || "路邊停車區";
+                        var rSpaces = (r.AvailableSpaces !== undefined && r.AvailableSpaces !== null)
+                            ? `即時空位：<b>${r.AvailableSpaces}</b>`
+                            : '路邊車位狀態';
+
+                        var navUrl = `https://www.google.com/maps/dir/?api=1&destination=${rLat},${rLon}`;
+                        var popupContent = `
+                            <b>🚗 ${rName}</b><br>
+                            ${rSpaces}<br>
+                            <a href="${navUrl}" target="_blank" class="nav-btn">一鍵導航</a>
+                        `;
+
+                        // 用不同顏色或圖示區分可以自行延伸，這裡先用標準 Marker
+                        L.marker([rLat, rLon]).addTo(map).bindPopup(popupContent);
                     }
                 });
 
             } catch (err) {
                 console.error(err);
-                document.getElementById('status').innerText = "載入停車場資料失敗";
+                document.getElementById('status').innerText = "載入停車資料失敗，請檢查 API 設定";
             }
         }
     </script>

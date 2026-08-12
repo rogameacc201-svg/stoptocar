@@ -33,11 +33,23 @@
                 L.marker([lat, lon]).addTo(map).bindPopup('<b>📍 您在這裡</b>');
                 loadRealData(lat, lon);
             }, () => {
-                document.getElementById('status').innerText = "無法定位，請開啟權限";
+                document.getElementById('status').innerText = "無法定位，使用預設區域";
                 loadRealData(24.1629, 120.6473);
             }, { enableHighAccuracy: true });
         } else {
             loadRealData(24.1629, 120.6473);
+        }
+
+        // 計算兩點距離（公尺）
+        function getDistance(lat1, lon1, lat2, lon2) {
+            const R = 6371e3;
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLon = (lon2 - lon1) * Math.PI / 180;
+            const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                      Math.sin(dLon/2) * Math.sin(dLon/2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+            return R * c;
         }
 
         async function loadRealData(lat, lon) {
@@ -47,41 +59,56 @@
                 if (!tData.access_token) throw new Error('無法取得授權 Token');
                 const token = tData.access_token;
 
-                // 範圍設為 5000 公尺 (5公里)，比較不會因為資料量過大導致 API 超時
-                const range = 5000; 
-
+                // 改為抓取臺中市全部資料，避免 spatialFilter 發生 404 錯誤
                 const [pRes, sRes] = await Promise.all([
-                    fetch(`https://tdx.transportdata.tw/api/basic/v2/Parking/ParkingByProximity/City/Taichung?%24spatialFilter=nearby(${lat}%2C${lon}%2C${range})&%24format=JSON`, { headers: { 'Authorization': `Bearer ${token}` } }),
-                    fetch(`https://tdx.transportdata.tw/api/basic/v2/Parking/OnStreetParking/City/Taichung?%24spatialFilter=nearby(${lat}%2C${lon}%2C${range})&%24format=JSON`, { headers: { 'Authorization': `Bearer ${token}` } })
+                    fetch(`https://tdx.transportdata.tw/api/basic/v2/Parking/ParkingByProximity/City/Taichung?%24format=JSON`, { headers: { 'Authorization': `Bearer ${token}` } }),
+                    fetch(`https://tdx.transportdata.tw/api/basic/v2/Parking/OnStreetParking/City/Taichung?%24format=JSON`, { headers: { 'Authorization': `Bearer ${token}` } })
                 ]);
 
                 const parkingLots = await pRes.json();
                 const onStreetLots = await sRes.json();
 
-                document.getElementById('status').innerText = `已載入 ${parkingLots.length} 個停車場、${onStreetLots.length} 筆路邊車位`;
+                // 確保格式為陣列
+                const pArray = Array.isArray(parkingLots) ? parkingLots : (parkingLots.ParkingJourneys || parkingLots.ParkingLots || []);
+                const sArray = Array.isArray(onStreetLots) ? onStreetLots : [];
+
+                // 篩選 5 公里內的資料
+                const maxDistance = 5000;
+                
+                const nearbyParking = pArray.filter(p => {
+                    const pos = p.ParkingPosition;
+                    if (!pos) return false;
+                    return getDistance(lat, lon, pos.PositionLat, pos.PositionLon) <= maxDistance;
+                });
+
+                const nearbyOnStreet = sArray.filter(r => {
+                    const pos = r.CarParkPosition || r.RoadSectionPosition;
+                    if (!pos) return false;
+                    return getDistance(lat, lon, pos.PositionLat, pos.PositionLon) <= maxDistance;
+                });
+
+                document.getElementById('status').innerText = `已載入 ${nearbyParking.length} 個停車場、${nearbyOnStreet.length} 筆路邊車位`;
 
                 // 渲染路外停車場
-                parkingLots.forEach(p => {
-                    if (p.ParkingPosition) {
-                        const lat = p.ParkingPosition.PositionLat;
-                        const lon = p.ParkingPosition.PositionLon;
-                        L.marker([lat, lon], {icon: L.icon({iconUrl: 'https://cdn-icons-png.flaticon.com/512/2767/2767220.png', iconSize: [25, 25]})})
-                         .addTo(map).bindPopup(`<b>🅿️ ${p.ParkingName?.Zh_tw || "停車場"}</b><br>剩餘：${p.AvailableSpaces ?? '未知'}<br><a href="https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}" target="_blank" class="nav-btn">一鍵導航</a>`);
-                    }
+                nearbyParking.forEach(p => {
+                    const pLat = p.ParkingPosition.PositionLat;
+                    const pLon = p.ParkingPosition.PositionLon;
+                    L.marker([pLat, pLon], {icon: L.icon({iconUrl: 'https://cdn-icons-png.flaticon.com/512/2767/2767220.png', iconSize: [25, 25]})})
+                     .addTo(map).bindPopup(`<b>🅿️ ${p.ParkingName?.Zh_tw || "停車場"}</b><br>剩餘：${p.AvailableSpaces ?? '未知'}<br><a href="https://www.google.com/maps/dir/?api=1&destination=${pLat},${pLon}" target="_blank" class="nav-btn">一鍵導航</a>`);
                 });
 
                 // 渲染路邊車位
-                onStreetLots.forEach(r => {
+                nearbyOnStreet.forEach(r => {
                     const pos = r.CarParkPosition || r.RoadSectionPosition;
-                    if (pos) {
-                        L.marker([pos.PositionLat, pos.PositionLon], {icon: L.icon({iconUrl: 'https://cdn-icons-png.flaticon.com/512/787/787534.png', iconSize: [25, 25]})})
-                         .addTo(map).bindPopup(`<b>🚗 ${r.RoadSectionName || "路邊車位"}</b><br>空位：${r.AvailableSpaces ?? '未知'}<br><a href="https://www.google.com/maps/dir/?api=1&destination=${pos.PositionLat},${pos.PositionLon}" target="_blank" class="nav-btn">一鍵導航</a>`);
-                    }
+                    const rLat = pos.PositionLat;
+                    const rLon = pos.PositionLon;
+                    L.marker([rLat, rLon], {icon: L.icon({iconUrl: 'https://cdn-icons-png.flaticon.com/512/787/787534.png', iconSize: [25, 25]})})
+                     .addTo(map).bindPopup(`<b>🚗 ${r.RoadSectionName || "路邊車位"}</b><br>空位：${r.AvailableSpaces ?? '未知'}<br><a href="https://www.google.com/maps/dir/?api=1&destination=${rLat},${rLon}" target="_blank" class="nav-btn">一鍵導航</a>`);
                 });
 
             } catch (err) {
                 console.error(err);
-                document.getElementById('status').innerText = "載入完成（資料可能過少）";
+                document.getElementById('status').innerText = "載入發生錯誤，請檢查主控台";
             }
         }
     </script>

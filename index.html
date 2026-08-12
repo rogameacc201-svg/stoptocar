@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>附近停車位查詢系統</title>
+    <title>附近即時停車位查詢</title>
     <!-- Leaflet CSS -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <style>
@@ -26,6 +26,7 @@
             font-size: 16px;
             font-weight: bold;
             color: #333;
+            text-align: center;
         }
         #map {
             width: 100vw;
@@ -44,11 +45,20 @@
         .nav-btn:hover {
             background-color: #0056b3;
         }
+        .loading-tip {
+            font-size: 12px;
+            color: #666;
+            margin-top: 4px;
+        }
     </style>
 </head>
 <body>
 
-    <div id="header">🚗 附近停車位即時查詢</div>
+    <div id="header">
+        🚗 附近即時停車位查詢
+        <div id="status" class="loading-tip">正在取得您的位置...</div>
+    </div>
+    
     <div id="map"></div>
 
     <!-- Leaflet JS -->
@@ -63,7 +73,7 @@
             attribution: '© OpenStreetMap 貢獻者'
         }).addTo(map);
 
-        // 3. 取得使用者當前定位
+        // 3. 取得使用者當前定位並加載附近停車場
         if (navigator.geolocation) {
             navigator.geolocation.getCurrentPosition(function(position) {
                 var lat = position.coords.latitude;
@@ -73,45 +83,82 @@
                 map.setView([lat, lon], 16);
 
                 // 標記使用者位置
-                var userMarker = L.marker([lat, lon]).addTo(map)
-                    .bindPopup('<b>您在這裡</b>')
+                L.marker([lat, lon]).addTo(map)
+                    .bindPopup('<b>📍 您在這裡</b>')
                     .openPopup();
 
-                // 模擬載入附近的停車場（以使用者座標附近產生幾個範例點，後續可改接 TDX API）
-                loadNearbyParking(lat, lon);
+                // 更新狀態並開始抓取真實停車位資料
+                document.getElementById('status').innerText = "正在載入附近即時停車位...";
+                loadTdxParkingData(lat, lon);
 
             }, function(error) {
-                alert('無法取得您的地理定位，請確認是否允許瀏覽器存取位置資訊。');
-                // 若定位失敗，仍載入預設區域的停車場
-                loadNearbyParking(24.1629, 120.6473);
+                document.getElementById('status').innerText = "無法取得定位，顯示預設區域";
+                alert('無法取得您的地理定位，將以預設區域查詢。');
+                loadTdxParkingData(24.1629, 120.6473);
             });
         } else {
             alert('您的瀏覽器不支援地理定位功能。');
-            loadNearbyParking(24.1629, 120.6473);
+            loadTdxParkingData(24.1629, 120.6473);
         }
 
-        // 4. 載入停車場函式（未來可替換為串接政府 TDX 停車場 API）
-        function loadNearbyParking(centerLat, centerLon) {
-            // 這裡用幾個範例座標模擬附近停車場
-            var dummyParkings = [
-                { name: "示範停車場 A (24H)", lat: centerLat + 0.003, lon: centerLon + 0.002, spaces: "剩餘 15 位" },
-                { name: "示範路邊車位區 B", lat: centerLat - 0.002, lon: centerLon + 0.004, spaces: "即時空位: 3" },
-                { name: "示範立體停車場 C", lat: centerLat + 0.001, lon: centerLon - 0.003, spaces: "剩餘 42 位" }
-            ];
-
-            dummyParkings.forEach(function(p) {
-                // 產生 Google Maps 導航連結
-                var navUrl = `https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lon}`;
+        // 4. 透過後端 API 取得 Token 並向 TDX 查詢即時停車場資料
+        async function loadTdxParkingData(lat, lon) {
+            try {
+                // 向我們自己的 Vercel 後端要 Token
+                const tokenRes = await fetch('/api/get-token');
+                const tokenData = await tokenRes.json();
                 
-                var popupContent = `
-                    <b>${p.name}</b><br>
-                    狀態：${p.spaces}<br>
-                    <a href="${navUrl}" target="_blank" class="nav-btn">一鍵導航</a>
-                `;
+                if (!tokenData.access_token) {
+                    throw new Error('無法取得授權 Token');
+                }
+                const token = tokenData.access_token;
 
-                L.marker([p.lat, p.lon]).addTo(map)
-                    .bindPopup(popupContent);
-            });
+                // 呼叫 TDX 臺中市附近停車場即時剩餘位數 API (半徑 2 公里內)
+                const parkingUrl = `https://tdx.transportdata.tw/api/basic/v2/Parking/ParkingByProximity/City/Taichung?%24spatialFilter=nearby(${lat}%2C${lon}%2C2000)&%24format=JSON`;
+
+                const parkingRes = await fetch(parkingUrl, {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                
+                const parkingLots = await parkingRes.json();
+
+                if (parkingLots.length === 0) {
+                    document.getElementById('status').innerText = "附近無資料或超出範圍";
+                    return;
+                }
+
+                document.getElementById('status').innerText = `已載入附近 ${parkingLots.length} 個停車場`;
+
+                // 將真實停車場資料渲染到地圖上
+                parkingLots.forEach(p => {
+                    if (p.ParkingPosition && p.ParkingPosition.PositionLat) {
+                        var pLat = p.ParkingPosition.PositionLat;
+                        var pLon = p.ParkingPosition.PositionLon;
+                        var name = p.ParkingName.Zh_tw;
+                        
+                        // 取得剩餘車位（若 API 有提供即時動態則顯示，否則顯示未知）
+                        var availableSpaces = (p.AvailableSpaces !== undefined && p.AvailableSpaces !== null) 
+                            ? `剩餘車位：<b>${p.AvailableSpaces}</b>` 
+                            : '即時車位資料未提供';
+
+                        // Google 導航連結
+                        var navUrl = `https://www.google.com/maps/dir/?api=1&destination=${pLat},${pLon}`;
+
+                        var popupContent = `
+                            <b>${name}</b><br>
+                            ${availableSpaces}<br>
+                            <a href="${navUrl}" target="_blank" class="nav-btn">一鍵導航</a>
+                        `;
+
+                        L.marker([pLat, pLon]).addTo(map)
+                            .bindPopup(popupContent);
+                    }
+                });
+
+            } catch (err) {
+                console.error(err);
+                document.getElementById('status').innerText = "載入停車場資料失敗";
+            }
         }
     </script>
 </body>

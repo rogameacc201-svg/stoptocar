@@ -31,35 +31,20 @@
                 const { latitude: lat, longitude: lon } = pos.coords;
                 map.setView([lat, lon], 15);
                 L.marker([lat, lon]).addTo(map).bindPopup('<b>📍 您在這裡</b>');
-                loadOpenStreetMapParking(lat, lon);
+                loadParking(lat, lon);
             }, () => {
                 document.getElementById('status').innerText = "定位失敗，使用預設區域";
-                loadOpenStreetMapParking(24.1500, 120.7100);
+                loadParking(24.1500, 120.7100);
             }, { enableHighAccuracy: true });
         } else {
-            loadOpenStreetMapParking(24.1500, 120.7100);
+            loadParking(24.1500, 120.7100);
         }
 
-        // 使用 Overpass API 從 OpenStreetMap 撈取半徑 3 公里內的真實停車場
-        async function loadOpenStreetMapParking(lat, lon) {
-            const radius = 3000; // 3公里範圍
-            const query = `
-                [out:json][timeout:25];
-                (
-                  node["amenity"="parking"](around:${radius},${lat},${lon});
-                  way["amenity"="parking"](around:${radius},${lat},${lon});
-                  relation["amenity"="parking"](around:${radius},${lat},${lon});
-                );
-                out center;
-            `;
-
+        async function loadParking(lat, lon) {
             try {
-                const response = await fetch('https://overpass-api.de/api/interpreter', {
-                    method: 'POST',
-                    body: query
-                });
-                const data = await response.json();
-                const elements = data.elements || {};
+                const res = await fetch(`/api/parking?lat=${lat}&lon=${lon}`);
+                const data = await res.json();
+                const elements = data.elements || [];
 
                 document.getElementById('status').innerText = `已載入 ${elements.length} 個周邊停車場`;
 
@@ -71,7 +56,7 @@
                         const name = (el.tags && (el.tags.name || el.tags['name:zh'])) || "停車場";
                         const navUrl = `https://www.google.com/maps/dir/?api=1&destination=${pLat},${pLon}`;
 
-                        L.marker([pLat, pLon], {
+                    L.marker([pLat, pLon], {
                             icon: L.icon({
                                 iconUrl: 'https://cdn-icons-png.flaticon.com/512/2767/2767220.png',
                                 iconSize: [25, 25]

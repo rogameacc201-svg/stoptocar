@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>附近停車位查詢系統</title>
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #f4f4f9;
+        }
+        #header {
+            position: absolute;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 1000;
+            background: white;
+            padding: 10px 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+            font-size: 16px;
+            font-weight: bold;
+            color: #333;
+        }
+        #map {
+            width: 100vw;
+            height: 100vh;
+        }
+        .nav-btn {
+            display: inline-block;
+            margin-top: 8px;
+            padding: 6px 12px;
+            background-color: #007bff;
+            color: white;
+            text-decoration: none;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        .nav-btn:hover {
+            background-color: #0056b3;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="header">🚗 附近停車位即時查詢</div>
+    <div id="map"></div>
+
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        // 1. 初始化地圖（預設先以臺中為中心）
+        var map = L.map('map').setView([24.1629, 120.6473], 15);
+
+        // 2. 載入 OpenStreetMap 圖資
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            attribution: '© OpenStreetMap 貢獻者'
+        }).addTo(map);
+
+        // 3. 取得使用者當前定位
+        if (navigator.geolocation) {
+            navigator.geolocation.getCurrentPosition(function(position) {
+                var lat = position.coords.latitude;
+                var lon = position.coords.longitude;
+
+                // 將地圖移動到使用者位置，放大到 16 級
+                map.setView([lat, lon], 16);
+
+                // 標記使用者位置
+                var userMarker = L.marker([lat, lon]).addTo(map)
+                    .bindPopup('<b>您在這裡</b>')
+                    .openPopup();
+
+                // 模擬載入附近的停車場（以使用者座標附近產生幾個範例點，後續可改接 TDX API）
+                loadNearbyParking(lat, lon);
+
+            }, function(error) {
+                alert('無法取得您的地理定位，請確認是否允許瀏覽器存取位置資訊。');
+                // 若定位失敗，仍載入預設區域的停車場
+                loadNearbyParking(24.1629, 120.6473);
+            });
+        } else {
+            alert('您的瀏覽器不支援地理定位功能。');
+            loadNearbyParking(24.1629, 120.6473);
+        }
+
+        // 4. 載入停車場函式（未來可替換為串接政府 TDX 停車場 API）
+        function loadNearbyParking(centerLat, centerLon) {
+            // 這裡用幾個範例座標模擬附近停車場
+            var dummyParkings = [
+                { name: "示範停車場 A (24H)", lat: centerLat + 0.003, lon: centerLon + 0.002, spaces: "剩餘 15 位" },
+                { name: "示範路邊車位區 B", lat: centerLat - 0.002, lon: centerLon + 0.004, spaces: "即時空位: 3" },
+                { name: "示範立體停車場 C", lat: centerLat + 0.001, lon: centerLon - 0.003, spaces: "剩餘 42 位" }
+            ];
+
+            dummyParkings.forEach(function(p) {
+                // 產生 Google Maps 導航連結
+                var navUrl = `https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lon}`;
+                
+                var popupContent = `
+                    <b>${p.name}</b><br>
+                    狀態：${p.spaces}<br>
+                    <a href="${navUrl}" target="_blank" class="nav-btn">一鍵導航</a>
+                `;
+
+                L.marker([p.lat, p.lon]).addTo(map)
+                    .bindPopup(popupContent);
+            });
+        }
+    </script>
+</body>
+</html>

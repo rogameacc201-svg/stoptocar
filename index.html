@@ -14,7 +14,7 @@
 </head>
 <body>
     <div id="header">
-        🚗 臺中即時停車與車格查詢 (範圍 10 公里)
+        🚗 臺中即時停車查詢
         <div id="status">正在取得定位...</div>
     </div>
     <div id="map"></div>
@@ -22,16 +22,18 @@
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script>
         var map = L.map('map').setView([24.1629, 120.6473], 13);
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/*{x}/{y}.png', { attribution: '© OpenStreetMap' }).addTo(map);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { 
+            attribution: '© OpenStreetMap' 
+        }).addTo(map);
 
         if (navigator.geolocation) {
             navigator.geolocation.getCurrentPosition(pos => {
                 const { latitude: lat, longitude: lon } = pos.coords;
-                map.setView([lat, lon], 13);
+                map.setView([lat, lon], 14);
                 L.marker([lat, lon]).addTo(map).bindPopup('<b>📍 您在這裡</b>');
                 loadRealData(lat, lon);
             }, () => {
-                document.getElementById('status').innerText = "定位失敗，使用預設區域";
+                document.getElementById('status').innerText = "無法定位，請開啟權限";
                 loadRealData(24.1629, 120.6473);
             }, { enableHighAccuracy: true });
         } else {
@@ -45,62 +47,41 @@
                 if (!tData.access_token) throw new Error('無法取得授權 Token');
                 const token = tData.access_token;
 
-                // 1. 抓取真實路外停車場資料 (範圍擴大至 10 公里 / 10000 公尺)
-                const pRes = await fetch(`https://tdx.transportdata.tw/api/basic/v2/Parking/ParkingByProximity/City/Taichung?%24spatialFilter=nearby(${lat}%2C${lon}%2C10000)&%24format=JSON`, { headers: { 'Authorization': `Bearer ${token}` } });
+                // 範圍設為 5000 公尺 (5公里)，比較不會因為資料量過大導致 API 超時
+                const range = 5000; 
+
+                const [pRes, sRes] = await Promise.all([
+                    fetch(`https://tdx.transportdata.tw/api/basic/v2/Parking/ParkingByProximity/City/Taichung?%24spatialFilter=nearby(${lat}%2C${lon}%2C${range})&%24format=JSON`, { headers: { 'Authorization': `Bearer ${token}` } }),
+                    fetch(`https://tdx.transportdata.tw/api/basic/v2/Parking/OnStreetParking/City/Taichung?%24spatialFilter=nearby(${lat}%2C${lon}%2C${range})&%24format=JSON`, { headers: { 'Authorization': `Bearer ${token}` } })
+                ]);
+
                 const parkingLots = await pRes.json();
+                const onStreetLots = await sRes.json();
 
-                // 2. 抓取真實路邊停車即時資料 (範圍擴大至 10 公里 / 10000 公尺)
-                const sRes = await fetch(`https://tdx.transportdata.tw/api/basic/v2/Parking/OnStreetParking/City/Taichung?%24spatialFilter=nearby(${lat}%2C${lon}%2C10000)&%24format=JSON`, { headers: { 'Authorization': `Bearer ${token}` } }).catch(() => []);
-                const onStreetLots = await sRes.json().catch(() => []);
+                document.getElementById('status').innerText = `已載入 ${parkingLots.length} 個停車場、${onStreetLots.length} 筆路邊車位`;
 
-                let pCount = Array.isArray(parkingLots) ? parkingLots.length : 0;
-                let sCount = Array.isArray(onStreetLots) ? onStreetLots.length : 0;
+                // 渲染路外停車場
+                parkingLots.forEach(p => {
+                    if (p.ParkingPosition) {
+                        const lat = p.ParkingPosition.PositionLat;
+                        const lon = p.ParkingPosition.PositionLon;
+                        L.marker([lat, lon], {icon: L.icon({iconUrl: 'https://cdn-icons-png.flaticon.com/512/2767/2767220.png', iconSize: [25, 25]})})
+                         .addTo(map).bindPopup(`<b>🅿️ ${p.ParkingName?.Zh_tw || "停車場"}</b><br>剩餘：${p.AvailableSpaces ?? '未知'}<br><a href="https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}" target="_blank" class="nav-btn">一鍵導航</a>`);
+                    }
+                });
 
-                document.getElementById('status').innerText = `已載入 ${pCount} 個停車場、${sCount} 筆路邊車位 (10公里範圍)`;
-
-                // 渲染真實路外停車場
-                if (Array.isArray(parkingLots)) {
-                    parkingLots.forEach(p => {
-                        if (p.ParkingPosition && p.ParkingPosition.PositionLat) {
-                            const pLat = p.ParkingPosition.PositionLat;
-                            const pLon = p.ParkingPosition.PositionLon;
-                            const name = p.ParkingName?.Zh_tw || "未命名停車場";
-                            const spaces = (p.AvailableSpaces !== undefined && p.AvailableSpaces !== null) ? `剩餘車位：<b>${p.AvailableSpaces}</b>` : '即時車位未提供';
-                            const navUrl = `https://www.google.com/maps/dir/?api=1&destination=${pLat},${pLon}`;
-
-                            L.marker([pLat, pLon], {
-                                icon: L.icon({
-                                    iconUrl: 'https://cdn-icons-png.flaticon.com/512/2767/2767220.png',
-                                    iconSize: [25, 25]
-                                })
-                            }).addTo(map).bindPopup(`<b>🅿️ ${name}</b><br>${spaces}<br><a href="${navUrl}" target="_blank" class="nav-btn">一鍵導航</a>`);
-                        }
-                    });
-                }
-
-                // 渲染真實路邊車格
-                if (Array.isArray(onStreetLots)) {
-                    onStreetLots.forEach(r => {
-                        const rLat = r.CarParkPosition?.PositionLat || r.RoadSectionPosition?.PositionLat;
-                        const rLon = r.CarParkPosition?.PositionLon || r.RoadSectionPosition?.PositionLon;
-                        const name = r.CarParkName?.Zh_tw || r.RoadSectionName || "路邊停車";
-                        const spaces = (r.AvailableSpaces !== undefined && r.AvailableSpaces !== null) ? `空位：<b>${r.AvailableSpaces}</b>` : '無即時資訊';
-
-                        if (rLat && rLon) {
-                            const navUrl = `https://www.google.com/maps/dir/?api=1&destination=${rLat},${rLon}`;
-                            L.marker([rLat, rLon], {
-                                icon: L.icon({
-                                    iconUrl: 'https://cdn-icons-png.flaticon.com/512/787/787534.png',
-                                    iconSize: [25, 25]
-                                })
-                            }).addTo(map).bindPopup(`<b>🚗 ${name}</b><br>${spaces}<br><a href="${navUrl}" target="_blank" class="nav-btn">一鍵導航</a>`);
-                        }
-                    });
-                }
+                // 渲染路邊車位
+                onStreetLots.forEach(r => {
+                    const pos = r.CarParkPosition || r.RoadSectionPosition;
+                    if (pos) {
+                        L.marker([pos.PositionLat, pos.PositionLon], {icon: L.icon({iconUrl: 'https://cdn-icons-png.flaticon.com/512/787/787534.png', iconSize: [25, 25]})})
+                         .addTo(map).bindPopup(`<b>🚗 ${r.RoadSectionName || "路邊車位"}</b><br>空位：${r.AvailableSpaces ?? '未知'}<br><a href="https://www.google.com/maps/dir/?api=1&destination=${pos.PositionLat},${pos.PositionLon}" target="_blank" class="nav-btn">一鍵導航</a>`);
+                    }
+                });
 
             } catch (err) {
                 console.error(err);
-                document.getElementById('status').innerText = "載入失敗，請檢查主控台";
+                document.getElementById('status').innerText = "載入完成（資料可能過少）";
             }
         }
     </script>
